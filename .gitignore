@@ -1,0 +1,31 @@
+# Technical specification (excluded per user request)
+docs/Technical_Specification.md
+
+# DOCX reports (excluded per user request)
+reports/*.docx
+
+# Dataset (excluded per user request)
+dataset/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Large generated GeoTIFFs (>10 MB each — generated artifacts)
+results/clusters/*.tif
+
+# Elbow analysis (generated placeholder)
+results/metadata/elbow_analysis.csv
+results/cluster_previews/_elbow_analysis.png
