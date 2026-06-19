@@ -4,41 +4,30 @@
 
 Проект реализует полный пайплайн: предобработка → PCA → кластеризация (K-Means + GMM) → оценка качества → визуализация → автоматическая генерация DOCX-отчёта.
 
-> 📄 **Техническое задание:** [`docs/Technical_Specification.md`](docs/Technical_Specification.md)
+---
+
+## Ключевые особенности
+
+**Два алгоритма:** MiniBatchKMeans (базовый) + Gaussian Mixture Model (современный)  
+**Без Ground Truth:** полностью неконтролируемая (unsupervised) сегментация  
+**PCA-снижение размерности:** 380+ полос → 30 компонент (>99% дисперсии)  
+**Кросс-референс с индексами:** автоматическая интерпретация кластеров через NDVI/NDWI/MNDWI/NDBI  
+**Elbow-анализ:** автоматический подбор оптимального K по Silhouette, Davies-Bouldin, Inertia  
+**GMM-неопределённость:** карта энтропии для оценки уверенности классификации  
+**GeoTIFF + PNG + CSV + DOCX:** полный набор выходных продуктов  
+**Воспроизводимость:** фиксированный random_state=42  
 
 ---
 
-## 📚 Быстрая навигация
-
-| Раздел | Описание |
-|--------|---------|
-| **[Техническое задание](docs/Technical_Specification.md)** | Полное описание задачи, алгоритмов и критериев |
-| **[Быстрый старт](#быстрый-старт)** | Инструкции по установке и запуску |
-
----
-
-## 🎯 Ключевые особенности
-
-✅ **Два алгоритма:** MiniBatchKMeans (базовый) + Gaussian Mixture Model (современный)  
-✅ **Без Ground Truth:** полностью неконтролируемая (unsupervised) сегментация  
-✅ **PCA-снижение размерности:** 380+ полос → 30 компонент (>99% дисперсии)  
-✅ **Кросс-референс с индексами:** автоматическая интерпретация кластеров через NDVI/NDWI/MNDWI/NDBI  
-✅ **Elbow-анализ:** автоматический подбор оптимального K по Silhouette, Davies-Bouldin, Inertia  
-✅ **GMM-неопределённость:** карта энтропии для оценки уверенности классификации  
-✅ **GeoTIFF + PNG + CSV + DOCX:** полный набор выходных продуктов  
-✅ **Воспроизводимость:** фиксированный random_state=42  
-
----
-
-## 📁 Структура проекта
+## Структура проекта
 
 ```
 HyperSpectral_Cluster/
 ├── docs/
 │   └── Technical_Specification.md        # Техническое задание
 ├── scripts/
-│   ├── cluster_segmentation.py           # 1️⃣ Главный пайплайн кластеризации
-│   └── generate_cluster_report.py        # 2️⃣ Генератор DOCX-отчёта
+│   ├── cluster_segmentation.py           # Главный пайплайн кластеризации
+│   └── generate_cluster_report.py        # Генератор DOCX-отчёта
 ├── results/
 │   ├── clusters/                         # GeoTIFF карты кластеров (int16)
 │   ├── cluster_previews/                 # PNG визуализации
@@ -48,14 +37,14 @@ HyperSpectral_Cluster/
 │       ├── cluster_summary_kmeans.csv
 │       └── cluster_summary_gmm.csv
 ├── reports/
-│   └── cluster_report.docx               # 📄 Итоговый отчёт
+│   └── cluster_report.docx               # Итоговый отчёт
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## 🚀 Быстрый старт
+## Быстрый старт
 
 ### Шаг 1: Установка зависимостей
 
@@ -90,7 +79,7 @@ python scripts/generate_cluster_report.py --n-clusters 10
 
 ---
 
-## 🔬 Алгоритмы
+## Алгоритмы
 
 ### K-Means (MiniBatch)
 Классический алгоритм Lloyd's K-Means. Разбивает пространство reflectance на K сферических кластеров. Используется как базовый референсный метод.
@@ -100,7 +89,7 @@ python scripts/generate_cluster_report.py --n-clusters 10
 
 ---
 
-## 📊 Выходные продукты
+## Выходные продукты
 
 1. **Карты кластеров** — GeoTIFF (int16): `results/clusters/clusters_{method}_k{K}.tif`
 2. **Карта неопределённости GMM** — GeoTIFF (float32): `results/clusters/uncertainty_gmm_k{K}.tif`
@@ -112,7 +101,7 @@ python scripts/generate_cluster_report.py --n-clusters 10
 
 ---
 
-## 📝 Таблица кластеров (cluster_summary)
+## Таблица кластеров (cluster_summary)
 
 Столбцы аналогичны `index_summary.csv` из `HyperSpectral_Index`, но для каждого кластера:
 
