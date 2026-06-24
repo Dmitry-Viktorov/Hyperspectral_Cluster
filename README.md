@@ -4,9 +4,7 @@
 
 Проект реализует полный пайплайн: предобработка → PCA → кластеризация (K-Means + GMM) → оценка качества → визуализация → автоматическая генерация DOCX-отчёта.
 
----
-
-## Ключевые особенности
+## Ключевые особенности:
 
 **Два алгоритма:** MiniBatchKMeans (базовый) + Gaussian Mixture Model (современный)  
 **Без Ground Truth:** полностью неконтролируемая (unsupervised) сегментация  
@@ -19,15 +17,15 @@
 
 ---
 
-## Структура проекта
+## 📁 Структура проекта
 
 ```
 HyperSpectral_Cluster/
 ├── docs/
 │   └── Technical_Specification.md        # Техническое задание
 ├── scripts/
-│   ├── cluster_segmentation.py           # Главный пайплайн кластеризации
-│   └── generate_cluster_report.py        # Генератор DOCX-отчёта
+│   ├── cluster_segmentation.py           # 1️⃣ Главный пайплайн кластеризации
+│   └── generate_cluster_report.py        # 2️⃣ Генератор DOCX-отчёта
 ├── results/
 │   ├── clusters/                         # GeoTIFF карты кластеров (int16)
 │   ├── cluster_previews/                 # PNG визуализации
@@ -37,14 +35,14 @@ HyperSpectral_Cluster/
 │       ├── cluster_summary_kmeans.csv
 │       └── cluster_summary_gmm.csv
 ├── reports/
-│   └── cluster_report.docx               # Итоговый отчёт
+│   └── cluster_report.docx               # 📄 Итоговый отчёт
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## Быстрый старт
+## 🚀 Быстрый старт
 
 ### Шаг 1: Установка зависимостей
 
@@ -79,7 +77,7 @@ python scripts/generate_cluster_report.py --n-clusters 10
 
 ---
 
-## Алгоритмы
+## Алгоритмы:
 
 ### K-Means (MiniBatch)
 Классический алгоритм Lloyd's K-Means. Разбивает пространство reflectance на K сферических кластеров. Используется как базовый референсный метод.
@@ -89,7 +87,7 @@ python scripts/generate_cluster_report.py --n-clusters 10
 
 ---
 
-## Выходные продукты
+## Выходные продукты:
 
 1. **Карты кластеров** — GeoTIFF (int16): `results/clusters/clusters_{method}_k{K}.tif`
 2. **Карта неопределённости GMM** — GeoTIFF (float32): `results/clusters/uncertainty_gmm_k{K}.tif`
@@ -101,7 +99,7 @@ python scripts/generate_cluster_report.py --n-clusters 10
 
 ---
 
-## Таблица кластеров (cluster_summary)
+## Таблица кластеров (cluster_summary):
 
 Столбцы аналогичны `index_summary.csv` из `HyperSpectral_Index`, но для каждого кластера:
 

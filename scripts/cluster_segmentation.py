@@ -64,12 +64,36 @@ RANDOM_SEED = 42
 # Шаг по полосам (1 = все, 3 = каждая 3-я — компромисс скорость/качество)
 BAND_STEP = 3
 
-# Палитра для кластеров (до 15 цветов, различимых)
-CLUSTER_PALETTE = [
-    "#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00",
-    "#ffff33", "#a65628", "#f781bf", "#66c2a5", "#fc8d62",
-    "#8da0cb", "#e78ac3", "#a6d854", "#ffd92f", "#e5c494",
+# Палитра для кластеров — физически осмысленные цвета, единые для всех алгоритмов
+# Порядок: вода → застройка/грунт → разреженная раст-ть → умеренная → густая
+UNIFIED_PALETTE = [
+    "#2166ac",  # вода (тёмно-синий)
+    "#4393c3",  # вода / влажные зоны (светло-синий)
+    "#d73027",  # застройка / искусств. покрытия (красный)
+    "#fc8d59",  # сухой грунт / оголённая почва (оранжевый)
+    "#ffffbf",  # разреженная растительность (светло-жёлтый)
+    "#a6d96a",  # умеренная растительность (светло-зелёный)
+    "#1a9850",  # густая растительность (средне-зелёный)
+    "#006d2c",  # очень густая растительность (тёмно-зелёный)
 ]
+
+def _assign_unified_color(dominant_class: str, mean_ndvi: float) -> str:
+    """Назначить цвет из единой палитры по физическому классу и NDVI."""
+    c = dominant_class
+    if "вода" in c:
+        return UNIFIED_PALETTE[0] if mean_ndvi < -0.15 else UNIFIED_PALETTE[1]
+    if "застройка" in c or "искусств" in c:
+        return UNIFIED_PALETTE[2]
+    if "сухой грунт" in c or "почва" in c:
+        return UNIFIED_PALETTE[3]
+    if "разреженная" in c:
+        return UNIFIED_PALETTE[4]
+    if "умеренная" in c:
+        return UNIFIED_PALETTE[5]
+    if "густая" in c:
+        return UNIFIED_PALETTE[6] if mean_ndvi < 0.80 else UNIFIED_PALETTE[7]
+    # Смешанный / переходный
+    return UNIFIED_PALETTE[3]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -95,6 +119,13 @@ def _parse_args() -> argparse.Namespace:
                    help="Spatial step for full-image PCA transform (1=all pixels, 2=every 2nd)")
     p.add_argument("--band-step", type=int, default=BAND_STEP,
                    help=f"Spectral band subsampling step (default={BAND_STEP}, 1=all bands)")
+    # --- K-Means variants ---
+    p.add_argument("--kmeans-variants", action="store_true",
+                   help="Run 3 K-Means variants (default, custom centroids, stratified sampling)")
+    p.add_argument("--centroid-coords", type=str, default="",
+                   help="Comma-separated row,col pairs, e.g. '100,200;3000,400'")
+    p.add_argument("--stratify-samples", type=str, default="",
+                   help="Comma-separated sample counts per cluster, e.g. '5000,3000,2000,10000'")
     return p.parse_args()
 
 
@@ -379,6 +410,166 @@ def fit_kmeans(data_reduced: np.ndarray, n_clusters: int, seed: int = RANDOM_SEE
     return km, labels, data_norm
 
 
+def fit_kmeans_custom_centroids(
+    data_reduced: np.ndarray, n_clusters: int,
+    centroid_indices: list[int], seed: int = RANDOM_SEED,
+):
+    """K-Means с инициализацией центроидов заданными пикселями изображения.
+
+    Вместо k-means++ пользователь указывает индексы пикселей из обучающей
+    выборки, которые станут начальными центроидами. Это позволяет явно
+    задать прототипы классов (например, «вот этот пиксель — вода»).
+
+    Args:
+        centroid_indices: список индексов в data_reduced для инициализации.
+            Если len < n_clusters, недостающие добавляются k-means++.
+    """
+    from sklearn.cluster import MiniBatchKMeans
+    from sklearn.preprocessing import normalize
+    print(f"\n🟦 K-Means Variant 2: custom centroid init (K={n_clusters})...")
+    data_norm = normalize(data_reduced.astype(np.float64), norm='l2')
+
+    # Формируем начальные центроиды
+    init_centroids = np.zeros((n_clusters, data_norm.shape[1]), dtype=np.float64)
+    n_custom = min(len(centroid_indices), n_clusters)
+    for i in range(n_custom):
+        init_centroids[i] = data_norm[centroid_indices[i]]
+    # Оставшиеся — k-means++
+    if n_custom < n_clusters:
+        rng = np.random.default_rng(seed)
+        remaining = rng.choice(len(data_norm), n_clusters - n_custom, replace=False)
+        for i in range(n_custom, n_clusters):
+            init_centroids[i] = data_norm[remaining[i - n_custom]]
+
+    print(f"   Кастомных центроидов: {n_custom}/{n_clusters}")
+    km = MiniBatchKMeans(
+        n_clusters=n_clusters, init=init_centroids, n_init=1,
+        random_state=seed, batch_size=10_000, max_iter=100,
+    )
+    labels = km.fit_predict(data_norm)
+    print(f"   Inertia: {km.inertia_:.2f}")
+    return km, labels, data_norm
+
+
+def fit_kmeans_stratified(
+    data_reduced: np.ndarray, n_clusters: int,
+    samples_per_cluster: list[int] | None = None,
+    seed: int = RANDOM_SEED,
+):
+    """K-Means со стратифицированной выборкой — разное число пикселей на кластер.
+
+    Позволяет задать произвольный размер обучающей подвыборки для каждого
+    будущего кластера. Полезно, когда априорно известно, что одни классы
+    представлены малым числом пикселей, а другие — большим.
+
+    Args:
+        samples_per_cluster: список длиной n_clusters с числом пикселей
+            для каждого кластера. Если None, используется равномерно.
+    """
+    from sklearn.cluster import MiniBatchKMeans
+    from sklearn.preprocessing import normalize
+    print(f"\n🟦 K-Means Variant 3: stratified sampling (K={n_clusters})...")
+    data_norm = normalize(data_reduced.astype(np.float64), norm='l2')
+
+    if samples_per_cluster is None:
+        samples_per_cluster = [len(data_norm) // n_clusters] * n_clusters
+
+    total = sum(samples_per_cluster)
+    # Делаем pre-clustering на большем K, затем отбираем
+    # Упрощённый подход: стратифицируем по первой PCA-компоненте
+    pc1 = data_norm[:, 0]
+    bins = np.linspace(pc1.min(), pc1.max(), n_clusters + 1)
+    stratified_idx = []
+    rng = np.random.default_rng(seed)
+    for k in range(n_clusters):
+        in_bin = np.where((pc1 >= bins[k]) & (pc1 < bins[k + 1]))[0]
+        n_avail = len(in_bin)
+        n_take = min(samples_per_cluster[k], n_avail)
+        if n_take > 0:
+            stratified_idx.extend(rng.choice(in_bin, n_take, replace=False).tolist())
+    stratified_idx = np.array(stratified_idx[:total], dtype=np.int64)
+    stratified_data = data_norm[stratified_idx] if len(stratified_idx) > 0 else data_norm
+
+    print(f"   Стратифицированная выборка: {len(stratified_data):,} пикселей "
+          f"(из запрошенных {total:,})")
+    km = MiniBatchKMeans(
+        n_clusters=n_clusters, random_state=seed,
+        batch_size=10_000, max_iter=100, n_init=3,
+    )
+    labels_all = km.fit_predict(data_norm)  # метки для ВСЕХ данных
+    labels = labels_all[stratified_idx] if len(stratified_idx) > 0 else labels_all
+    print(f"   Inertia: {km.inertia_:.2f}")
+    return km, labels_all, data_norm
+
+
+# ===================================================================
+# K-Means variants comparison
+# ===================================================================
+
+def run_kmeans_variants(
+    data_reduced: np.ndarray, n_clusters: int,
+    valid_mask: np.ndarray, cube_reader,
+    band_indices: list[int], args, full_reduced: np.ndarray,
+) -> list[dict]:
+    """Запустить 3 варианта K-Means и вернуть сравнительные результаты."""
+    from sklearn.preprocessing import normalize
+
+    results = []
+
+    # --- Variant 1: Default (k-means++) ---
+    print("\n" + "=" * 60)
+    print("  K-MEANS VARIANT 1/3: default (k-means++ init, uniform sampling)")
+    print("=" * 60)
+    res1 = run_clustering("kmeans", n_clusters, data_reduced, valid_mask,
+                          None, cube_reader, band_indices, args, full_reduced,
+                          variant_label="k-means++ (default)")
+    if res1:
+        res1["method"] = "K-Means (k-means++)"
+        results.append(res1)
+
+    # --- Variant 2: Custom centroid init ---
+    # Автоматически выбираем разнообразные центроиды из разных частей NDVI-спектра
+    data_norm = normalize(data_reduced.astype(np.float64), norm='l2')
+    pc1 = data_norm[:, 0]
+    bins = np.linspace(pc1.min(), pc1.max(), n_clusters)
+    centroid_idx = []
+    for k in range(n_clusters):
+        in_bin = np.where((pc1 >= bins[k]) & (pc1 < bins[k + 1] if k < n_clusters - 1
+                          else True))[0]
+        if len(in_bin) > 0:
+            centroid_idx.append(int(in_bin[len(in_bin) // 2]))  # медианный пиксель бина
+    print("\n" + "=" * 60)
+    print(f"  K-MEANS VARIANT 2/3: custom centroid init ({len(centroid_idx)} centroids from PC1 bins)")
+    print("=" * 60)
+    # Переопределяем fit_kmeans для этого варианта через run_clustering
+    res2 = run_clustering("kmeans_custom", n_clusters, data_reduced, valid_mask,
+                          None, cube_reader, band_indices, args, full_reduced,
+                          variant_label="custom centroids",
+                          centroid_indices=centroid_idx)
+    if res2:
+        res2["method"] = "K-Means (custom centroids)"
+        results.append(res2)
+
+    # --- Variant 3: Stratified sampling ---
+    # Равномерная стратификация: поровну пикселей на каждый будущий кластер
+    total_train = min(len(data_reduced), args.max_train_pixels)
+    per_cluster = total_train // n_clusters
+    samples = [per_cluster] * n_clusters
+    samples[-1] += total_train - per_cluster * n_clusters  # остаток в последний
+    print("\n" + "=" * 60)
+    print(f"  K-MEANS VARIANT 3/3: stratified sampling ({samples})")
+    print("=" * 60)
+    res3 = run_clustering("kmeans_stratified", n_clusters, data_reduced, valid_mask,
+                          None, cube_reader, band_indices, args, full_reduced,
+                          variant_label="stratified",
+                          samples_per_cluster=samples)
+    if res3:
+        res3["method"] = "K-Means (stratified)"
+        results.append(res3)
+
+    return results
+
+
 def fit_gmm(data_reduced: np.ndarray, n_clusters: int, seed: int = RANDOM_SEED):
     """Обучение Gaussian Mixture Model с L2-нормализацией."""
     from sklearn.mixture import GaussianMixture
@@ -614,7 +805,8 @@ def compute_cross_indices(
     df["dominant_class"] = df.apply(_dominant, axis=1)
 
     # Цвет
-    df["color"] = [CLUSTER_PALETTE[i % len(CLUSTER_PALETTE)] for i in range(len(df))]
+    df["color"] = df.apply(
+        lambda r: _assign_unified_color(r.get("dominant_class",""), r.get("mean_ndvi",0.0)), axis=1)
 
     return df
 
@@ -624,7 +816,7 @@ def compute_cluster_spectral_stats(
     label_map_full: np.ndarray,
     n_clusters: int,
     band_indices: list[int],
-    max_per_cluster: int = 2000,
+    max_per_cluster: int = 300,
     seed: int = RANDOM_SEED,
 ) -> dict[int, dict]:
     """Вычислить средний спектр ± std для каждого кластера (memmap, только нужные строки).
@@ -697,7 +889,7 @@ def save_cluster_visualization(
     # Маскирование невалидных
     masked_labels = np.ma.masked_where(label_map < 0, label_map.astype(np.float32))
 
-    colors = [CLUSTER_PALETTE[i % len(CLUSTER_PALETTE)] for i in range(n_clusters)]
+    colors = [row.get("color", "#999999") for _, row in cluster_df.iterrows()]
     cmap = ListedColormap(colors[:n_clusters], name=f"{method_name}_clusters")
 
     fig = plt.figure(figsize=(18, 13), dpi=150, facecolor="white")
@@ -726,7 +918,7 @@ def save_cluster_visualization(
         st = cluster_stats.get(c, {})
         mean_s = st.get("mean_spectrum", np.array([]))
         if len(mean_s) > 0:
-            color = CLUSTER_PALETTE[c % len(CLUSTER_PALETTE)]
+            color = cluster_df.iloc[c].get("color", "#999999") if c < len(cluster_df) else "#999999"
             ax_spec.plot(wl_used, mean_s, color=color, linewidth=1.2, label=f"C{c}")
     ax_spec.set_xlabel("Длина волны, нм", fontsize=9)
     ax_spec.set_ylabel("Reflectance", fontsize=9)
@@ -746,7 +938,7 @@ def save_cluster_visualization(
         dom = row.get("dominant_class", "?")
         cnt = int(row["pixel_count"])
         frac = row["pixel_fraction"]
-        color_hex = row.get("color", CLUSTER_PALETTE[cid % len(CLUSTER_PALETTE)])
+        color_hex = row.get("color", "#999999")
         ndvi_v = row.get("mean_ndvi", np.nan)
         if np.isfinite(ndvi_v):
             legend_text += f"  C{cid}: {dom}  |  NDVI={ndvi_v:+.3f}  |  N={cnt:,} ({frac:.1%})\n"
@@ -811,7 +1003,7 @@ def save_cluster_legend(method_name: str, n_clusters: int, cluster_df: pd.DataFr
         cid = int(row["cluster_id"])
         dom = row.get("dominant_class", "?")
         cnt = int(row["pixel_count"])
-        color_hex = row.get("color", CLUSTER_PALETTE[cid % len(CLUSTER_PALETTE)])
+        color_hex = row.get("color", "#999999")
         ndvi_v = row.get("mean_ndvi", np.nan)
         ndvi_str = f"NDVI={ndvi_v:+.3f}" if np.isfinite(ndvi_v) else ""
         ax.add_patch(mpatches.Rectangle((0.02, y - 0.035), 0.06, 0.04,
@@ -865,6 +1057,9 @@ def run_clustering(
     band_indices: list[int],
     args,
     full_reduced: np.ndarray | None = None,
+    variant_label: str = "",
+    centroid_indices: list[int] | None = None,
+    samples_per_cluster: list[int] | None = None,
 ) -> dict | None:
     """Запустить кластеризацию указанным методом.
 
@@ -877,6 +1072,11 @@ def run_clustering(
     # --- Обучение (с L2-нормализацией для косинусного расстояния) ---
     if method == "kmeans":
         model, train_labels, train_norm = fit_kmeans(data_reduced, n_clusters)
+    elif method == "kmeans_custom":
+        idx_list = centroid_indices if centroid_indices else list(range(min(n_clusters, len(data_reduced))))
+        model, train_labels, train_norm = fit_kmeans_custom_centroids(data_reduced, n_clusters, idx_list)
+    elif method == "kmeans_stratified":
+        model, train_labels, train_norm = fit_kmeans_stratified(data_reduced, n_clusters, samples_per_cluster)
     else:
         model, train_labels, train_norm = fit_gmm(data_reduced, n_clusters)
     result["model"] = model
@@ -895,7 +1095,7 @@ def run_clustering(
     sub_rows, sub_cols = np.where(valid_mask)
     n_valid = len(sub_rows)
 
-    if method == "kmeans":
+    if method in ("kmeans", "kmeans_custom", "kmeans_stratified"):
         full_labels_flat = predict_full_kmeans(model, predict_norm)
     else:
         full_labels_flat, full_probs_flat = predict_full_gmm(model, predict_norm)
@@ -936,6 +1136,7 @@ def run_clustering(
     print("📈 Средние спектры кластеров...")
     cluster_stats = compute_cluster_spectral_stats(
         cube_reader, label_map_full, n_clusters, band_indices,
+        max_per_cluster=300,
     )
 
     # --- Внутрикластерная однородность ---
@@ -969,19 +1170,20 @@ def run_clustering(
     result["rgb"] = rgb
 
     # --- Сохранение ---
-    method_slug = method.lower()
+    method_slug = method.replace("_", "-")
+    suffix = f"_{variant_label}" if variant_label else ""
+    file_tag = f"{method_slug}{suffix}_k{n_clusters}"
 
     # GeoTIFF
     if not args.no_tiff:
-        tiff_path = args.output_root / "clusters" / f"clusters_{method_slug}_k{n_clusters}.tif"
-        save_label_tiff(tiff_path, label_map_full, cube_reader.dataset, method.upper(), n_clusters)
+        tiff_path = args.output_root / "clusters" / f"clusters_{file_tag}.tif"
+        save_label_tiff(tiff_path, label_map_full, cube_reader.dataset, method.upper() + suffix, n_clusters)
         if method == "gmm" and "probabilities" in result:
-            # Карта неопределённости
             max_prob = result["probabilities"].max(axis=1)
             uncertainty = 1.0 - max_prob
             unc_map = np.full(valid_mask.shape, np.nan, dtype=np.float32)
             unc_map[sub_rows, sub_cols] = uncertainty.astype(np.float32)
-            unc_path = args.output_root / "clusters" / f"uncertainty_{method_slug}_k{n_clusters}.tif"
+            unc_path = args.output_root / "clusters" / f"uncertainty_{file_tag}.tif"
             write_tiff(
                 unc_path, unc_map, cube_reader.dataset,
                 metadata={"type": "gmm_uncertainty", "method": "GMM",
@@ -990,19 +1192,19 @@ def run_clustering(
             print(f"   ✓ Карта неопределённости: {unc_path.relative_to(ROOT)}")
 
     # CSV
-    csv_path = args.output_root / "metadata" / f"cluster_summary_{method_slug}.csv"
+    csv_path = args.output_root / "metadata" / f"cluster_summary_{file_tag}.csv"
     cluster_df.to_csv(csv_path, index=False)
     print(f"   ✓ Таблица кластеров: {csv_path.relative_to(ROOT)}")
 
     # Визуализации
     if not args.no_viz:
-        viz_path = args.output_root / "cluster_previews" / f"clusters_{method_slug}_k{n_clusters}.png"
+        viz_path = args.output_root / "cluster_previews" / f"clusters_{file_tag}.png"
         save_cluster_visualization(
-            rgb, label_map_full, viz_path, method.upper(), n_clusters,
+            rgb, label_map_full, viz_path, method.upper() + suffix, n_clusters,
             cube_reader.scene_info.wavelengths_nm, cluster_stats, band_indices, cluster_df,
         )
-        leg_path = args.output_root / "legends" / f"legend_{method_slug}_k{n_clusters}.png"
-        save_cluster_legend(method.upper(), n_clusters, cluster_df, leg_path)
+        leg_path = args.output_root / "legends" / f"legend_{file_tag}.png"
+        save_cluster_legend(method.upper() + suffix, n_clusters, cluster_df, leg_path)
 
     return result
 
@@ -1059,22 +1261,47 @@ def main() -> None:
 
     # --- 9. Кластеризация ---
     results = {}
-    methods = []
-    if args.method in ("kmeans", "both"):
-        methods.append("kmeans")
-    if args.method in ("gmm", "both"):
-        methods.append("gmm")
 
-    for m in methods:
+    if args.kmeans_variants:
+        # Режим сравнения трёх вариантов K-Means
         print(f"\n{'='*60}")
-        print(f"  КЛАСТЕРИЗАЦИЯ: {m.upper()}, K={args.n_clusters}")
+        print(f"  СРАВНЕНИЕ 3 ВАРИАНТОВ K-MEANS (K={args.n_clusters})")
         print(f"{'='*60}")
-        res = run_clustering(
-            m, args.n_clusters, train_reduced, valid_mask,
-            pca, reader, good_bands, args, full_reduced,
+        variant_results = run_kmeans_variants(
+            train_reduced, args.n_clusters, valid_mask,
+            reader, good_bands, args, full_reduced,
         )
-        if res:
-            results[m] = res
+        for vr in variant_results:
+            results[vr["method"]] = vr
+        # Добавляем GMM если запрошен
+        if args.method in ("gmm", "both"):
+            print(f"\n{'='*60}")
+            print(f"  КЛАСТЕРИЗАЦИЯ: GMM, K={args.n_clusters} (референс)")
+            print(f"{'='*60}")
+            res = run_clustering(
+                "gmm", args.n_clusters, train_reduced, valid_mask,
+                pca, reader, good_bands, args, full_reduced,
+            )
+            if res:
+                results["gmm"] = res
+    else:
+        # Обычный режим
+        methods = []
+        if args.method in ("kmeans", "both"):
+            methods.append("kmeans")
+        if args.method in ("gmm", "both"):
+            methods.append("gmm")
+
+        for m in methods:
+            print(f"\n{'='*60}")
+            print(f"  КЛАСТЕРИЗАЦИЯ: {m.upper()}, K={args.n_clusters}")
+            print(f"{'='*60}")
+            res = run_clustering(
+                m, args.n_clusters, train_reduced, valid_mask,
+                pca, reader, good_bands, args, full_reduced,
+            )
+            if res:
+                results[m] = res
 
     # --- 10. Итоговая сводка ---
     print(f"\n{'='*60}")
