@@ -2,52 +2,43 @@
 
 **Неконтролируемая спектральная сегментация гиперспектрального снимка AVIRIS-NG методами кластерного анализа (без Ground Truth).**
 
-Проект реализует полный пайплайн: предобработка → PCA → кластеризация (K-Means + GMM) → оценка качества → визуализация → автоматическая генерация DOCX-отчёта.
+Проект реализует полный пайплайн: предобработка → PCA → кластеризация (K-Means в 3 вариантах + GMM) → оценка качества → визуализация → DOCX-отчёт.
 
-## Ключевые особенности:
+## Ключевые особенности
 
-**Два алгоритма:** MiniBatchKMeans (базовый) + Gaussian Mixture Model (современный)  
-**Без Ground Truth:** полностью неконтролируемая (unsupervised) сегментация  
-**PCA-снижение размерности:** 380+ полос → 30 компонент (>99% дисперсии)  
-**Кросс-референс с индексами:** автоматическая интерпретация кластеров через NDVI/NDWI/MNDWI/NDBI  
-**Elbow-анализ:** автоматический подбор оптимального K по Silhouette, Davies-Bouldin, Inertia  
-**GMM-неопределённость:** карта энтропии для оценки уверенности классификации  
-**GeoTIFF + PNG + CSV + DOCX:** полный набор выходных продуктов  
-**Воспроизводимость:** фиксированный random_state=42  
+✅ **K-Means в 3 вариантах:** k-means++ (default), custom centroids (PC1 bins), stratified sampling  
+✅ **GMM с мягкой кластеризацией:** вероятности + карта неопределённости  
+✅ **Единая цветовая легенда** для всех методов — физическая привязка к классу  
+✅ **Косинусное расстояние** (L2-нормализация PCA) — акцент на форме спектра  
+✅ **Без Ground Truth** — полностью неконтролируемая сегментация  
+✅ **PCA**: 125 полос → 30 компонент (>99% дисперсии)  
+✅ **Кросс-референс**: авто-интерпретация кластеров через NDVI/NDWI/MNDWI/NDBI/PRI  
+✅ **BIL-оптимизация**: numpy memmap вместо GDAL для 6.5 GB ENVI файлов  
+✅ **GeoTIFF + PNG + CSV + DOCX** — полный набор выходных продуктов  
 
----
+## Сравнение K-Means (K=8, cosine distance)
 
-## 📁 Структура проекта
+| Вариант | Inertia ↓ | Silhouette ↑ | DB ↓ |
+|---------|-----------|-------------|------|
+| k-means++ (default) | 4879 | 0.526 | 0.766 |
+| **Custom centroids** | **4640** | **0.547** | **0.743** |
+| Stratified sampling | 4879 | 0.526 | 0.766 |
+| *GMM (референс)* | — | 0.364 | 2.061 |
 
-```
-HyperSpectral_Cluster/
-├── docs/
-│   └── Technical_Specification.md        # Техническое задание
-├── scripts/
-│   ├── cluster_segmentation.py           # 1️⃣ Главный пайплайн кластеризации
-│   └── generate_cluster_report.py        # 2️⃣ Генератор DOCX-отчёта
-├── results/
-│   ├── clusters/                         # GeoTIFF карты кластеров (int16)
-│   ├── cluster_previews/                 # PNG визуализации
-│   ├── legends/                          # PNG легенды
-│   └── metadata/                         # CSV таблицы
-│       ├── elbow_analysis.csv
-│       ├── cluster_summary_kmeans.csv
-│       └── cluster_summary_gmm.csv
-├── reports/
-│   └── cluster_report.docx               # 📄 Итоговый отчёт
-├── requirements.txt
-└── README.md
-```
-
----
-
-## 🚀 Быстрый старт
-
-### Шаг 1: Установка зависимостей
+## Быстрый старт
 
 ```bash
 pip install -r requirements.txt
+
+# Обычный запуск (K-Means + GMM):
+python scripts/cluster_segmentation.py --method both --n-clusters 8
+
+# Сравнение 3 вариантов K-Means:
+python scripts/cluster_segmentation.py --method both --n-clusters 8 --kmeans-variants
+
+# Генерация DOCX-отчёта:
+python scripts/generate_cluster_report.py --n-clusters 8
+```
 ```
 
 ### Шаг 2: Запуск кластеризации
